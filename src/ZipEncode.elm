@@ -1,12 +1,12 @@
-module ZipEncode exposing (..)
+module ZipEncode exposing (CompressionMethod(..), File, constructZip)
 
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Encode as Encode exposing (Encoder)
-import Flate
 
 
 type CompressionMethod
     = NoCompression
+    | DeflateCompression
 
 
 encodeCompressionMethod : CompressionMethod -> Encoder
@@ -14,6 +14,9 @@ encodeCompressionMethod method =
     case method of
         NoCompression ->
             Encode.unsignedInt16 LE 0
+
+        DeflateCompression ->
+            Encode.unsignedInt16 LE 8
 
 
 constructZip : List File -> Bytes
@@ -23,6 +26,9 @@ constructZip files =
             files
                 |> List.map encodeFile
                 |> Encode.sequence
+
+        centralOffset =
+            Bytes.width (Encode.encode encodedFiles)
 
         segments =
             files
@@ -44,13 +50,13 @@ constructZip files =
             Encode.sequence
                 [ encodedFiles
                 , Encode.bytes segments
-                , endOfCentralDirectoryRecord files (Bytes.width segments)
+                , endOfCentralDirectoryRecord files (Bytes.width segments) centralOffset
                 ]
     in
     Encode.encode encoder
 
 
-endOfCentralDirectoryRecord files centralDirectorySize =
+endOfCentralDirectoryRecord files centralDirectorySize offsetFromStart =
     let
         signature =
             Encode.unsignedInt32 LE 0x06054B50
@@ -71,7 +77,8 @@ endOfCentralDirectoryRecord files centralDirectorySize =
             Encode.unsignedInt32 LE centralDirectorySize
 
         offset =
-            Encode.unsignedInt32 LE centralDirectorySize
+            -- Encode.unsignedInt32 LE (Debug.log "offset" (centralDirectorySize + 163))
+            Encode.unsignedInt32 LE offsetFromStart
 
         zipCommentLength =
             Encode.unsignedInt16 LE 0
@@ -93,22 +100,21 @@ endOfCentralDirectoryRecord files centralDirectorySize =
 
 
 type alias File =
-    { name : String, bytes : Bytes }
+    { name : String
+    , content : Bytes
+    , uncompressedSize : Int
+    , compressedSize : Int
+    , compression : CompressionMethod
+    , crc : Int
+    }
 
 
 encodeFile : File -> Encoder
 encodeFile file =
-    -- TODO do we need an encryption header or data descriptor?
     Encode.sequence
         [ localFileHeader file
-        , encryptionHeader file
-        , Encode.bytes file.bytes
+        , Encode.bytes file.content
         ]
-
-
-encryptionHeader file =
-    -- Encode.sequence (List.repeat (8 + 16) (Encode.unsignedInt8 0))
-    Encode.sequence []
 
 
 localFileHeader : File -> Encoder
@@ -124,7 +130,7 @@ localFileHeader file =
             Encode.unsignedInt16 LE 0
 
         compressionMethod =
-            encodeCompressionMethod NoCompression
+            encodeCompressionMethod file.compression
 
         lastModifiedFileTime =
             Encode.unsignedInt16 LE 0
@@ -133,15 +139,13 @@ localFileHeader file =
             Encode.unsignedInt16 LE 0
 
         crc32 =
-            Encode.unsignedInt32 LE (Flate.crc32 file.bytes)
+            Encode.unsignedInt32 LE file.crc
 
         compressedSize =
-            Bytes.width file.bytes
-                |> Encode.unsignedInt32 LE
+            Encode.unsignedInt32 LE file.compressedSize
 
         uncompressedSize =
-            Bytes.width file.bytes
-                |> Encode.unsignedInt32 LE
+            Encode.unsignedInt32 LE file.uncompressedSize
 
         fileNameLength =
             Encode.unsignedInt16 LE (Encode.getStringWidth file.name)
@@ -188,7 +192,7 @@ centralDirectoryHeader file offset =
             Encode.unsignedInt16 LE 0
 
         compressionMethod =
-            encodeCompressionMethod NoCompression
+            encodeCompressionMethod file.compression
 
         lastModifiedFileTime =
             Encode.unsignedInt16 LE 0
@@ -197,15 +201,13 @@ centralDirectoryHeader file offset =
             Encode.unsignedInt16 LE 0
 
         crc32 =
-            Encode.unsignedInt32 LE (Flate.crc32 file.bytes)
+            Encode.unsignedInt32 LE file.crc
 
         compressedSize =
-            Bytes.width file.bytes
-                |> Encode.unsignedInt32 LE
+            Encode.unsignedInt32 LE file.compressedSize
 
         uncompressedSize =
-            Bytes.width file.bytes
-                |> Encode.unsignedInt32 LE
+            Encode.unsignedInt32 LE file.uncompressedSize
 
         fileNameLength =
             Encode.unsignedInt16 LE (Encode.getStringWidth file.name)

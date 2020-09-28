@@ -5,27 +5,33 @@ import Bytes.Encode as Encode
 import File.Download
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
-import ZipEncode
+import Zip
 
 
 myFiles =
-    [ { name = "test.txt"
-      , bytes = Encode.encode (Encode.string fooText)
-      }
-        , { name = "lorum.txt"
-          , bytes = Encode.encode (Encode.string loremText)
-          }
+    -- [ Zip.stringEntry "test.txt"  "besit stjert, sibben stjerre; dosels stjerst as harren; mar ien ding wit ik, dat iivig libbet"
+    --[ Zip.stringEntry "test.txt"  "foo bar baz\n"
+    -- , Zip.stringEntry "lorum.txt" "lorem ipsum\n"
+    [Zip.stringEntry "laulu.txt" laulu 
+
     ]
 
+laulu = 
+    """Jokaisille loistaen
+Näyttävät ne tien
+Karttaan piirtäen
+Hiljainena tuikkeena
+Kuiskausten kaikuna
+Kuukan ei kuule
+Niiden loputonta laulua
 
-fooText =
-    """foo bar baz
+Laulakka, hiljaa laulakaa
+Toisinne valovuosien matka
+Olkaa valona sen kaipussa
+Laulaka laulanne
+Mutta kukaan ei kuule..
 """
 
-
-loremText =
-    """lorem ipsum
-"""
 
 
 type alias Model =
@@ -45,7 +51,10 @@ type Msg
 download files =
     let
         bytes =
-            ZipEncode.constructZip files
+            if False then
+                Zip.withoutCompression files
+            else 
+                Zip.withDeflateCompression files
     in
     File.Download.bytes "test.zip" "application/zip" bytes
 
@@ -55,7 +64,6 @@ update msg model =
     case msg of
         Increment ->
             ( { model | count = model.count + 1 }
-              -- , Cmd.none
             , download myFiles
             )
 
