@@ -10,9 +10,9 @@ import Zip
 
 myFiles =
     -- [ Zip.stringEntry "test.txt"  "besit stjert, sibben stjerre; dosels stjerst as harren; mar ien ding wit ik, dat iivig libbet"
-    --[ Zip.stringEntry "test.txt"  "foo bar baz\n"
+    [ Zip.stringEntry "test.txt"  "foo bar baz\n"
     -- , Zip.stringEntry "lorum.txt" "lorem ipsum\n"
-    [Zip.stringEntry "laulu.txt" laulu 
+    --[ Zip.stringEntry "laulu.txt" laulu 
 
     ]
 
@@ -51,7 +51,7 @@ type Msg
 download files =
     let
         bytes =
-            if False then
+            if True then
                 Zip.withoutCompression files
             else 
                 Zip.withDeflateCompression files
