@@ -4,6 +4,7 @@ import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode exposing (Decoder, Step(..))
 import Bytes.Decode.Extra as Decode
 import Bytes.Extra
+import Flate
 
 
 type alias ZipFile =
@@ -31,14 +32,30 @@ looper accum =
                 case header of
                     0x04034B50 ->
                         -- local file header
+                        let
+                            process localFileHeader content =
+                                case localFileHeader.compressionMethod of
+                                    0 ->
+                                        Loop { accum | files = ( localFileHeader, content ) :: accum.files }
+                                            |> Decode.succeed
+
+                                    8 ->
+                                        case Flate.inflate content of
+                                            Just decompressedContent ->
+                                                Loop { accum | files = ( localFileHeader, decompressedContent ) :: accum.files }
+                                                    |> Decode.succeed
+
+                                            Nothing ->
+                                                failure "error inflating content"
+
+                                    _ ->
+                                        failure "unsupported compression method"
+                        in
                         decodeLocalFileHeader
                             |> Decode.andThen
                                 (\localFileHeader ->
                                     Decode.bytes localFileHeader.compressedSize
-                                        |> Decode.map
-                                            (\content ->
-                                                Loop { accum | files = ( localFileHeader, content ) :: accum.files }
-                                            )
+                                        |> Decode.andThen (process localFileHeader)
                                 )
 
                     0x02014B50 ->
@@ -54,7 +71,11 @@ looper accum =
                         decodeEndOfCentralDirectory
                             |> Decode.map
                                 (\end ->
-                                    Done { files = List.reverse accum.files, centrals = List.reverse accum.centrals, end = end }
+                                    Done
+                                        { files = List.reverse accum.files
+                                        , centrals = List.reverse accum.centrals
+                                        , end = end
+                                        }
                                 )
 
                     _ ->
@@ -263,3 +284,8 @@ keep arg func =
 drop : Decoder a -> Decoder b -> Decoder b
 drop ignoreDecoder keepDecoder =
     Decode.map2 always keepDecoder ignoreDecoder
+
+
+failure : String -> Decoder a
+failure _ =
+    Decode.fail
