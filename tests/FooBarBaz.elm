@@ -4,6 +4,7 @@ import Bytes.Decode as Decode
 import Bytes.Decode.Extra
 import Bytes.Encode as Encode
 import Bytes.Extra
+import Dict
 import Expect exposing (Expectation)
 import Fuzz exposing (Fuzzer, int, list, string)
 import Test exposing (..)
@@ -16,19 +17,20 @@ suite =
             \_ ->
                 let
                     file =
-                        ( { versionToExtract = 10
-                          , generalPurposeBitFlag = 0
-                          , compressionMethod = 0
-                          , lastModifiedTime = 37442
-                          , lastModifiedDate = 20795
-                          , crc32 = 143668611
-                          , compressedSize = 12
-                          , uncompressedSize = 12
-                          , fileName = "test.txt"
-                          , extraField = Bytes.Extra.empty
-                          }
-                        , Bytes.Extra.empty
-                        )
+                        { header =
+                            { versionToExtract = 10
+                            , generalPurposeBitFlag = 0
+                            , compressionMethod = 0
+                            , lastModifiedTime = 37442
+                            , lastModifiedDate = 20795
+                            , crc32 = 143668611
+                            , compressedSize = 12
+                            , uncompressedSize = 12
+                            , fileName = "test.txt"
+                            , extraField = Bytes.Extra.empty
+                            }
+                        , compressedContent = Bytes.Extra.empty
+                        }
 
                     central =
                         { versionMadeBy = 798
@@ -60,9 +62,13 @@ suite =
                         }
 
                     expected =
-                        { files = [ file ], centrals = [ central ], end = end }
+                        { possiblyCompressedFiles = Dict.singleton "test.txt" file
+                        , uncompressedFiles = Dict.empty
+                        , centrals = [ central ]
+                        , end = end
+                        }
                 in
-                case Decode.decode ZipDecode.decodeZipFile bytes of
+                case ZipDecode.readZipFile bytes of
                     Just value ->
                         value
                             |> Expect.equal expected

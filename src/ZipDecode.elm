@@ -1,99 +1,96 @@
-module ZipDecode exposing (decodeCentralDirectoryHeader, decodeEndOfCentralDirectory, decodeFile, decodeLocalFileHeader, decodeZipFile)
+module ZipDecode exposing (ZipFile, decodeCentralDirectoryHeader, decodeEndOfCentralDirectory, decodeFile, decodeLocalFileHeader, readZipFile)
 
+import Bitwise
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode exposing (Decoder, Step(..))
 import Bytes.Decode.Extra as Decode
 import Bytes.Extra
-import Flate
+import Dict exposing (Dict)
+
+
+endOfCentralDirectorySize : Int
+endOfCentralDirectorySize =
+    22
 
 
 type alias ZipFile =
-    { files : List ( LocalFileHeader, Bytes )
+    { possiblyCompressedFiles :
+        Dict String
+            { header : LocalFileHeader
+            , compressedContent : Bytes
+            }
+    , uncompressedFiles : Dict String Bytes
     , centrals : List CentralDirectoryHeader
     , end : EndOfCentralDirectory
     }
 
 
-decodeZipFile : Decoder ZipFile
-decodeZipFile =
-    Decode.loop { files = [], centrals = [] } looper
+readZipFile : Bytes -> Maybe ZipFile
+readZipFile buffer =
+    case readEndOfCentralDirectory buffer of
+        Nothing ->
+            Nothing
+
+        Just end ->
+            case readCentralDirectory buffer end of
+                Nothing ->
+                    Nothing
+
+                Just centrals ->
+                    case readLocalFiles buffer centrals of
+                        Nothing ->
+                            Nothing
+
+                        Just locals ->
+                            Just
+                                { possiblyCompressedFiles = locals
+                                , uncompressedFiles = Dict.empty
+                                , centrals = centrals
+                                , end = end
+                                }
 
 
-{-| Decode all the parts
+readEndOfCentralDirectory : Bytes -> Maybe EndOfCentralDirectory
+readEndOfCentralDirectory buffer =
+    let
+        endBuffer =
+            Bytes.Extra.drop (Bytes.width buffer - endOfCentralDirectorySize) buffer
+    in
+    case Decode.decode decodeEndOfCentralDirectory endBuffer of
+        Just x ->
+            Just x
 
-The zip file format does not give the size of each segment, instead each segment starts with a specific header.
-So we decode that header, and branch on it to decode the appropriate.
-
--}
-looper accum =
-    u32
-        |> Decode.andThen
-            (\header ->
-                case header of
-                    0x04034B50 ->
-                        -- local file header
-                        let
-                            process localFileHeader content =
-                                case localFileHeader.compressionMethod of
-                                    0 ->
-                                        Loop { accum | files = ( localFileHeader, content ) :: accum.files }
-                                            |> Decode.succeed
-
-                                    8 ->
-                                        case Flate.inflate content of
-                                            Just decompressedContent ->
-                                                Loop { accum | files = ( localFileHeader, decompressedContent ) :: accum.files }
-                                                    |> Decode.succeed
-
-                                            Nothing ->
-                                                failure "error inflating content"
-
-                                    _ ->
-                                        failure "unsupported compression method"
-                        in
-                        decodeLocalFileHeader
-                            |> Decode.andThen
-                                (\localFileHeader ->
-                                    Decode.bytes localFileHeader.compressedSize
-                                        |> Decode.andThen (process localFileHeader)
-                                )
-
-                    0x02014B50 ->
-                        -- central directory header
-                        decodeCentralDirectoryHeader
-                            |> Decode.map
-                                (\central ->
-                                    Loop { accum | centrals = central :: accum.centrals }
-                                )
-
-                    0x06054B50 ->
-                        -- end of central directory
-                        decodeEndOfCentralDirectory
-                            |> Decode.map
-                                (\end ->
-                                    Done
-                                        { files = List.reverse accum.files
-                                        , centrals = List.reverse accum.centrals
-                                        , end = end
-                                        }
-                                )
-
-                    _ ->
-                        Debug.todo "unknown header" header
-            )
+        Nothing ->
+            -- TODO try to find the header
+            Nothing
 
 
-decodeFile : Decoder { name : String, bytes : Bytes }
-decodeFile =
-    decodeLocalFileHeader
-        |> Decode.andThen
-            (\{ fileName, compressedSize } ->
-                Decode.bytes compressedSize
-                    |> Decode.map
-                        (\content ->
-                            { name = fileName, bytes = content }
-                        )
-            )
+readCentralDirectory : Bytes -> EndOfCentralDirectory -> Maybe (List CentralDirectoryHeader)
+readCentralDirectory buffer end =
+    let
+        centralBuffer =
+            Bytes.Extra.drop (Bytes.width buffer - (endOfCentralDirectorySize + end.size)) buffer
+    in
+    case Decode.decode (decodeCentralDirectory end.totalEntries) centralBuffer of
+        Just x ->
+            Just x
+
+        Nothing ->
+            Nothing
+
+
+readLocalFiles : Bytes -> List CentralDirectoryHeader -> Maybe (Dict String { header : LocalFileHeader, compressedContent : Bytes })
+readLocalFiles buffer centrals =
+    case Decode.decode (decodeLocalFileHeaders centrals) buffer of
+        Just x ->
+            Just x
+
+        Nothing ->
+            Nothing
+
+
+
+-- LOCAL FILE
 
 
 type alias LocalFileHeader =
@@ -110,6 +107,78 @@ type alias LocalFileHeader =
     }
 
 
+decodeLocalFileHeaders : List CentralDirectoryHeader -> Decoder (Dict String { header : LocalFileHeader, compressedContent : Bytes })
+decodeLocalFileHeaders headers =
+    Decode.loop { headers = headers, files = Dict.empty } decodeLocalFileHeadersHelp
+
+
+decodeCompressedContent { compressedSize } =
+    Decode.bytes compressedSize
+
+
+decodeLocalFileHeadersHelp { headers, files } =
+    case headers of
+        [] ->
+            Decode.succeed (Done files)
+
+        first :: rest ->
+            let
+                finalize file =
+                    let
+                        result =
+                            Loop
+                                { headers = rest
+                                , files = Dict.insert first.fileName file files
+                                }
+                    in
+                    if Bitwise.and 8 file.header.generalPurposeBitFlag > 0 then
+                        -- there is some extra stuff we should decode here
+                        Decode.succeed result
+                            |> drop decodeDataDescriptor
+
+                    else
+                        Decode.succeed result
+            in
+            Decode.succeed
+                (\localFileHeader content ->
+                    { header = localFileHeader, compressedContent = content }
+                )
+                |> keep decodeLocalFileHeader
+                |> keep (decodeCompressedContent first)
+                |> Decode.andThen finalize
+
+
+decodeDataDescriptor =
+    u32
+        |> Decode.andThen
+            (\found ->
+                if found == 0x08074B50 then
+                    -- three fields remain
+                    Decode.succeed ()
+                        |> drop u32
+                        |> drop u32
+                        |> drop u32
+
+                else
+                    -- the first field was the crc32, two fields remain
+                    Decode.succeed ()
+                        |> drop u32
+                        |> drop u32
+            )
+
+
+decodeFile =
+    decodeLocalFileHeader
+        |> Decode.andThen
+            (\{ fileName, compressedSize } ->
+                Decode.bytes compressedSize
+                    |> Decode.map
+                        (\content ->
+                            { name = fileName, bytes = content }
+                        )
+            )
+
+
 decodeLocalFileHeader : Decoder LocalFileHeader
 decodeLocalFileHeader =
     let
@@ -123,6 +192,7 @@ decodeLocalFileHeader =
                     )
     in
     Decode.succeed LocalFileHeader
+        |> drop (header 0x04034B50)
         |> keep u16
         |> keep u16
         |> keep u16
@@ -149,6 +219,10 @@ decodeLocalFileHeader =
                                     )
                         )
            )
+
+
+
+-- CENTRAL DIRECTORY
 
 
 type alias CentralDirectoryHeader =
@@ -191,6 +265,10 @@ type alias CentralDirectoryHeaderInternal =
     }
 
 
+decodeCentralDirectory n =
+    Decode.list n decodeCentralDirectoryHeader
+
+
 decodeCentralDirectoryHeader =
     let
         helper internal name extra comment =
@@ -224,6 +302,7 @@ decodeCentralDirectoryHeader =
 
 decodeCentralDirectoryHeaderInternal =
     Decode.succeed CentralDirectoryHeaderInternal
+        |> drop (header 0x02014B50)
         |> keep u16
         |> keep u16
         |> keep u16
@@ -240,6 +319,10 @@ decodeCentralDirectoryHeaderInternal =
         |> keep u16
         |> keep u32
         |> keep u32
+
+
+
+-- END OF CENTRAL DIRECTORY
 
 
 type alias EndOfCentralDirectory =
@@ -255,6 +338,7 @@ type alias EndOfCentralDirectory =
 
 decodeEndOfCentralDirectory =
     Decode.succeed EndOfCentralDirectory
+        |> drop (header 0x06054B50)
         |> keep u16
         |> keep u16
         |> keep u16
@@ -276,6 +360,18 @@ u32 =
     Decode.unsignedInt32 LE
 
 
+header constant =
+    u32
+        |> Decode.andThen
+            (\found ->
+                if found == constant then
+                    Decode.succeed ()
+
+                else
+                    failure ("invalid header found: " ++ String.fromInt found ++ " instead of " ++ String.fromInt constant)
+            )
+
+
 keep : Decoder a -> Decoder (a -> b) -> Decoder b
 keep arg func =
     Decode.map2 (<|) func arg
@@ -286,6 +382,9 @@ drop ignoreDecoder keepDecoder =
     Decode.map2 always keepDecoder ignoreDecoder
 
 
+{-| Helper for development
+-}
 failure : String -> Decoder a
-failure _ =
+failure message =
+    -- let _ = Debug.log "error" message in
     Decode.fail

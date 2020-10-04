@@ -77,7 +77,6 @@ endOfCentralDirectoryRecord files centralDirectorySize offsetFromStart =
             Encode.unsignedInt32 LE centralDirectorySize
 
         offset =
-            -- Encode.unsignedInt32 LE (Debug.log "offset" (centralDirectorySize + 163))
             Encode.unsignedInt32 LE offsetFromStart
 
         zipCommentLength =

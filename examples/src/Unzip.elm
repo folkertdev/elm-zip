@@ -9,12 +9,11 @@ import File.Select
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
 import Task
-import Zip
-import ZipDecode
+import Zip exposing (ZipFile)
 
 
 type alias Model =
-    ()
+    { zipfile : Maybe ZipFile  }
 
 
 type Msg
@@ -37,12 +36,7 @@ update msg model =
             )
 
         FileLoaded bytes ->
-            let
-                uncompressed =
-                    Bytes.Decode.decode ZipDecode.decodeZipFile bytes
-                        |> Debug.log "decoded"
-            in
-            ( model
+            ( { zipfile = Zip.readZipFile bytes } 
             , Cmd.none
             )
 
@@ -51,13 +45,14 @@ view : Model -> Html Msg
 view model =
     div []
         [ button [ onClick SelectFileClicked ] [ text "Upload file" ]
+        , text (Debug.toString model.zipfile) 
         ]
 
 
 main : Program () Model Msg
 main =
     Browser.document
-        { init = \() -> ( (), Cmd.none )
+        { init = \() -> ( { zipfile = Nothing }, Cmd.none )
         , view =
             \model ->
                 { title = "page"

@@ -4,6 +4,7 @@ import Bytes.Decode as Decode
 import Bytes.Decode.Extra
 import Bytes.Encode as Encode
 import Bytes.Extra
+import Dict
 import Expect exposing (Expectation)
 import Fuzz exposing (Fuzzer, int, list, string)
 import Test exposing (..)
@@ -16,34 +17,36 @@ suite =
             \_ ->
                 let
                     file1 =
-                        ( { versionToExtract = 10
-                          , generalPurposeBitFlag = 0
-                          , compressionMethod = 0
-                          , lastModifiedTime = 37442
-                          , lastModifiedDate = 20795
-                          , crc32 = 143668611
-                          , compressedSize = 12
-                          , uncompressedSize = 12
-                          , fileName = "test.txt"
-                          , extraField = Bytes.Extra.empty
-                          }
-                        , Bytes.Extra.empty
-                        )
+                        { header =
+                            { versionToExtract = 10
+                            , generalPurposeBitFlag = 0
+                            , compressionMethod = 0
+                            , lastModifiedTime = 37442
+                            , lastModifiedDate = 20795
+                            , crc32 = 143668611
+                            , compressedSize = 12
+                            , uncompressedSize = 12
+                            , fileName = "test.txt"
+                            , extraField = Bytes.Extra.empty
+                            }
+                        , compressedContent = Bytes.Extra.empty
+                        }
 
                     file2 =
-                        ( { versionToExtract = 10
-                          , generalPurposeBitFlag = 0
-                          , compressionMethod = 0
-                          , lastModifiedTime = 34028
-                          , lastModifiedDate = 20796
-                          , crc32 = 950370240
-                          , compressedSize = 12
-                          , uncompressedSize = 12
-                          , fileName = "lorum.txt"
-                          , extraField = Bytes.Extra.empty
-                          }
-                        , Bytes.Extra.empty
-                        )
+                        { header =
+                            { versionToExtract = 10
+                            , generalPurposeBitFlag = 0
+                            , compressionMethod = 0
+                            , lastModifiedTime = 34028
+                            , lastModifiedDate = 20796
+                            , crc32 = 950370240
+                            , compressedSize = 12
+                            , uncompressedSize = 12
+                            , fileName = "lorum.txt"
+                            , extraField = Bytes.Extra.empty
+                            }
+                        , compressedContent = Bytes.Extra.empty
+                        }
 
                     central1 =
                         { versionMadeBy = 798
@@ -94,9 +97,17 @@ suite =
                         }
 
                     expected =
-                        { files = [ file1, file2 ], centrals = [ central1, central2 ], end = end }
+                        { possiblyCompressedFiles =
+                            Dict.fromList
+                                [ ( "test.txt", file1 )
+                                , ( "lorum.txt", file2 )
+                                ]
+                        , uncompressedFiles = Dict.empty
+                        , centrals = [ central1, central2 ]
+                        , end = end
+                        }
                 in
-                case Decode.decode ZipDecode.decodeZipFile bytes of
+                case ZipDecode.readZipFile bytes of
                     Just value ->
                         value
                             |> Expect.equal expected

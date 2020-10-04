@@ -1,7 +1,9 @@
 module Zip exposing
     ( withoutCompression, withDeflateCompression
     , Entry, stringEntry, bytesEntry, fileEntry
-    , decodeToBytes, bytesToString
+    , ZipFile, readZipFile
+    , extractFile, extractStringFile
+    , bytesToString
     )
 
 {-| Create & Extract Zip files
@@ -19,13 +21,18 @@ module Zip exposing
 
 # Extract files from a zip file
 
-@docs decodeToBytes, bytesToString
+@docs ZipFile, readZipFile
+
+@docs extractFile, extractStringFile
+
+@docs bytesToString
 
 -}
 
 import Bytes exposing (Bytes)
 import Bytes.Decode as Decode
 import Bytes.Encode as Encode
+import Dict exposing (Dict)
 import File
 import Flate
 import Task
@@ -161,21 +168,128 @@ create compression entries =
     ZipEncode.constructZip bytesEntries
 
 
-{-| Convert a zip file into its constituent files
 
-A file is represented as a name and a `Bytes`, representing the uncompressed contents of the file.
+-- DECODING
 
--}
-decodeToBytes : Bytes -> Maybe (List { name : String, content : Bytes })
-decodeToBytes buffer =
-    case Decode.decode ZipDecode.decodeZipFile buffer of
-        Just result ->
-            result.files
-                |> List.map (\( header, content ) -> { name = header.fileName, content = content })
-                |> Just
+
+type ZipFile
+    = ZipFile ZipDecode.ZipFile
+
+
+readZipFile : Bytes -> Maybe ZipFile
+readZipFile buffer =
+    ZipDecode.readZipFile buffer
+        |> Maybe.map ZipFile
+
+
+extractFile : String -> ZipFile -> Maybe Bytes
+extractFile name (ZipFile zipfile) =
+    case Dict.get name zipfile.uncompressedFiles of
+        Just content ->
+            Just content
 
         Nothing ->
-            Nothing
+            case Dict.get name zipfile.possiblyCompressedFiles of
+                Nothing ->
+                    Nothing
+
+                Just { header, compressedContent } ->
+                    case header.compressionMethod of
+                        0 ->
+                            Just compressedContent
+
+                        8 ->
+                            case Flate.inflate compressedContent of
+                                Just inflated ->
+                                    Just inflated
+
+                                Nothing ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
+
+
+extractStringFile : String -> ZipFile -> Maybe String
+extractStringFile name zipfile =
+    extractFile name zipfile
+        |> Maybe.andThen bytesToString
+
+
+extractFiles : ZipFile -> Dict String Bytes
+extractFiles (ZipFile zipfile) =
+    let
+        folder key { header, compressedContent } accum =
+            case header.compressionMethod of
+                0 ->
+                    Dict.insert key compressedContent accum
+
+                8 ->
+                    case Flate.inflate compressedContent of
+                        Just inflated ->
+                            Dict.insert key inflated accum
+
+                        Nothing ->
+                            accum
+
+                _ ->
+                    accum
+    in
+    Dict.foldl folder zipfile.uncompressedFiles zipfile.possiblyCompressedFiles
+
+
+extractFilesStep : Int -> ZipFile -> Decode.Step ZipFile (Dict String Bytes)
+extractFilesStep maxSize (ZipFile zipfile) =
+    case extractFilesStepHelp maxSize (Dict.toList zipfile.possiblyCompressedFiles) zipfile.uncompressedFiles of
+        Decode.Done uncompressed ->
+            Decode.Done uncompressed
+
+        Decode.Loop ( newPossiblyCompressed, newUncompressed ) ->
+            { zipfile
+                | possiblyCompressedFiles = Dict.fromList newPossiblyCompressed
+                , uncompressedFiles = newUncompressed
+            }
+                |> ZipFile
+                |> Decode.Loop
+
+
+extractFilesStepHelp maxSize possiblyCompressedFiles uncompressedFiles =
+    case possiblyCompressedFiles of
+        [] ->
+            Decode.Done uncompressedFiles
+
+        ( key, { header, compressedContent } ) :: rest ->
+            case header.compressionMethod of
+                0 ->
+                    extractFilesStepHelp maxSize rest (Dict.insert key compressedContent uncompressedFiles)
+
+                8 ->
+                    if Bytes.width compressedContent < maxSize then
+                        case Flate.inflate compressedContent of
+                            Just inflated ->
+                                extractFilesStepHelp
+                                    (max 0 (maxSize - Bytes.width compressedContent))
+                                    rest
+                                    (Dict.insert key inflated uncompressedFiles)
+
+                            Nothing ->
+                                Decode.Loop ( possiblyCompressedFiles, uncompressedFiles )
+
+                    else
+                        extractFilesStepHelp
+                            maxSize
+                            rest
+                            uncompressedFiles
+
+                _ ->
+                    extractFilesStepHelp
+                        maxSize
+                        rest
+                        uncompressedFiles
+
+
+
+-- HELPERS
 
 
 {-| Attempt to convert a `Bytes` to a `String`
