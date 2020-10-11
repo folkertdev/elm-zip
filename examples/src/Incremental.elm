@@ -45,28 +45,32 @@ update msg model =
         Decompress zip ->
             let
                 extracted =
+                    -- here we specify the number of files to attempt in this go
+                    -- Also a maximum size if we want to skip files that are twoo huge.
                     Zip.extract
                         { count = 1
                         , maxSize = Nothing
-                        , hasStringContent = 
+                        , hasStringContent =
                             \filename ->
-                                filename |> String.endsWith ".txt" 
+                                filename |> String.endsWith ".txt"
                         }
                         zip
-
-               
             in
             case extracted of
                 Zip.Done decompressedFiles ->
-                     -- do some work once everything is decompressed
+                    -- do some work once everything is decompressed
                     ( model, Cmd.none )
 
                 Zip.Loop zipped ->
+                    -- There is still more to decompress
                     let
-                         progress =
+                        -- retrieve some data representing the current level of progress
+                        progress =
                             Zip.progress zipped
                     in
                     ( model
+                      -- Here we're waiting till the next frame before doing any more work
+                      -- this allows us to report progress to the user incrementally
                     , Task.perform
                         (always (Decompress zipped))
                         (Process.sleep 1)
