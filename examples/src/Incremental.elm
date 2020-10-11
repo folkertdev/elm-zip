@@ -38,9 +38,17 @@ update msg model =
             )
 
         FileLoaded bytes ->
-            ( { zipfile = Zip.read bytes }
-            , Cmd.none
-            )
+            case Zip.read bytes of
+                Nothing ->
+                    (model, Cmd.none)
+                Just zip ->
+                    let
+                        overview =
+                            Zip.overview zip
+                                |> Debug.log "overview"
+
+                    in
+                    update (Decompress zip) model
 
         Decompress zip ->
             let
@@ -59,6 +67,9 @@ update msg model =
             case extracted of
                 Zip.Done decompressedFiles ->
                     -- do some work once everything is decompressed
+                    let 
+                        _ = Debug.log "done" decompressedFiles
+                    in
                     ( model, Cmd.none )
 
                 Zip.Loop zipped ->
@@ -67,6 +78,7 @@ update msg model =
                         -- retrieve some data representing the current level of progress
                         progress =
                             Zip.progress zipped
+                                |> Debug.log "progress"
                     in
                     ( model
                       -- Here we're waiting till the next frame before doing any more work
