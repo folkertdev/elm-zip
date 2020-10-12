@@ -1,11 +1,17 @@
-module ZipDecode exposing (ZipFile, decodeCentralDirectoryHeader, decodeEndOfCentralDirectory, decodeFile, decodeLocalFileHeader, readZipFile)
+module ZipDecode exposing
+    ( ZipFile
+    , decodeCentralDirectoryHeader
+    , decodeEndOfCentralDirectory
+    , decodeFile
+    , decodeLocalFileHeader
+    , readZipFile
+    )
 
 import Bitwise
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode exposing (Decoder, Step(..))
 import Bytes.Decode.Extra as Decode
 import Bytes.Extra
-import Dict exposing (Dict)
 
 
 endOfCentralDirectorySize : Int
@@ -15,11 +21,13 @@ endOfCentralDirectorySize =
 
 type alias ZipFile =
     { possiblyCompressedFiles :
-        Dict String
-            { header : LocalFileHeader
-            , compressedContent : Bytes
-            }
-    , uncompressedFiles : Dict String Bytes
+        List
+            ( String
+            , { header : LocalFileHeader
+              , compressedContent : Bytes
+              }
+            )
+    , uncompressedFiles : List ( String, Bytes )
     , centrals : List CentralDirectoryHeader
     , end : EndOfCentralDirectory
     }
@@ -44,7 +52,7 @@ readZipFile buffer =
                         Just locals ->
                             Just
                                 { possiblyCompressedFiles = locals
-                                , uncompressedFiles = Dict.empty
+                                , uncompressedFiles = []
                                 , centrals = centrals
                                 , end = end
                                 }
@@ -79,7 +87,10 @@ readCentralDirectory buffer end =
             Nothing
 
 
-readLocalFiles : Bytes -> List CentralDirectoryHeader -> Maybe (Dict String { header : LocalFileHeader, compressedContent : Bytes })
+readLocalFiles :
+    Bytes
+    -> List CentralDirectoryHeader
+    -> Maybe (List ( String, { header : LocalFileHeader, compressedContent : Bytes } ))
 readLocalFiles buffer centrals =
     case Decode.decode (decodeLocalFileHeaders centrals) buffer of
         Just x ->
@@ -107,9 +118,9 @@ type alias LocalFileHeader =
     }
 
 
-decodeLocalFileHeaders : List CentralDirectoryHeader -> Decoder (Dict String { header : LocalFileHeader, compressedContent : Bytes })
+decodeLocalFileHeaders : List CentralDirectoryHeader -> Decoder (List ( String, { header : LocalFileHeader, compressedContent : Bytes } ))
 decodeLocalFileHeaders headers =
-    Decode.loop { headers = headers, files = Dict.empty } decodeLocalFileHeadersHelp
+    Decode.loop { headers = headers, files = [] } decodeLocalFileHeadersHelp
 
 
 decodeCompressedContent { compressedSize } =
@@ -128,7 +139,7 @@ decodeLocalFileHeadersHelp { headers, files } =
                         result =
                             Loop
                                 { headers = rest
-                                , files = Dict.insert first.fileName file files
+                                , files = ( first.fileName, file ) :: files
                                 }
                     in
                     if Bitwise.and 8 file.header.generalPurposeBitFlag > 0 then
